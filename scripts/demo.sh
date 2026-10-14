@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Credential-free demo of the full IncidentForge path (offline model, in-memory bus, local PR bundle).
 # Requires: Java 21+, Maven, curl, python3 (only for pretty-printing JSON).
+# FIXTURE picks the seeded incident (default: the Kafka poison event):
+#   FIXTURE=catalog-slow-product-page.json bash scripts/demo.sh   # slow read path
+#   FIXTURE=checkout-quote-errors.json     bash scripts/demo.sh   # bad feature-flag rollout
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -9,6 +12,7 @@ BASE="http://localhost:${PORT}"
 REPORTER="reporter:demo-reporter-only"
 REVIEWER="reviewer:demo-reviewer-only"
 PY="$(command -v python3 || command -v python)"
+FIXTURE="${FIXTURE:-orders-consumer-lag.json}"
 
 json() { "$PY" -c "import sys, json; d = json.load(sys.stdin); print($1)"; }
 
@@ -23,9 +27,9 @@ trap 'kill $APP_PID 2>/dev/null || true' EXIT
 echo "==> waiting for the app on $BASE"
 for _ in $(seq 1 60); do curl -fs "$BASE/actuator/health" >/dev/null 2>&1 && break; sleep 1; done
 
-echo "==> filing the sparse incident report (samples/incidents/orders-consumer-lag.json)"
+echo "==> filing the sparse incident report (samples/incidents/$FIXTURE)"
 RUN_ID=$(curl -fs -u "$REPORTER" -H 'Content-Type: application/json' -H "Idempotency-Key: demo-$(date +%s)" \
-  -d @samples/incidents/orders-consumer-lag.json "$BASE/api/incidents" | json "d['runId']")
+  -d @"samples/incidents/$FIXTURE" "$BASE/api/incidents" | json "d['runId']")
 echo "    run: $RUN_ID"
 
 echo "==> pipeline running (collect -> classify -> investigate -> mitigate -> fix -> validate)"

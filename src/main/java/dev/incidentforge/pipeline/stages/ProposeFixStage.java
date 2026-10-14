@@ -75,13 +75,14 @@ public class ProposeFixStage implements StageHandler {
         RootCauseAnalysis rca = json.read(context.run().rcaJson(), RootCauseAnalysis.class);
         Mitigation mitigation = json.read(context.run().mitigationJson(), Mitigation.class);
         RepositoryReader repo = services.repository(context.run().service());
-        String domain = services.require(context.run().service()).domain();
+        IncidentForgeProperties.ServiceProfile profile = services.require(context.run().service());
+        String domain = profile.domain();
         String boundary = PromptBuilder.newBoundary();
 
         String system = prompts.system("fixer",
                 "Propose the narrowest permanent code fix for the root cause below, plus one reproduction test. "
                         + "Edits are exact search/replace pairs against the current file content. Editable paths: "
-                        + properties.patch().editablePrefixes() + "; new test files: " + properties.patch().newFilePrefixes()
+                        + profile.editablePrefixes() + "; new test files: " + profile.newFilePrefixes()
                         + ". The mitigation is handled separately by the on-call engineer.",
                 skills.skill(domain, "fix"), boundary, ToolPolicy.allowedFor(Stage.PROPOSE_FIX),
                 json.write(schemas.modelSchema("fix")));
@@ -129,7 +130,7 @@ public class ProposeFixStage implements StageHandler {
         }
 
         ProposedPatch patch = json.convert(result.result(), ProposedPatch.class);
-        List<PatchPolicy.Violation> violations = new ArrayList<>(policy.check(patch, repo));
+        List<PatchPolicy.Violation> violations = new ArrayList<>(policy.check(patch, repo, profile));
         List<PatchPolicy.Violation> security = violations.stream()
                 .filter(v -> v.severity() == PatchPolicy.Severity.SECURITY).toList();
         if (!security.isEmpty()) {

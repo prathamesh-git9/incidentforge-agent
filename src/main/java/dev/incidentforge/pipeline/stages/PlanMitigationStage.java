@@ -46,11 +46,15 @@ public class PlanMitigationStage implements StageHandler {
     @Override
     public Outcome execute(Context context) {
         List<EvidenceItem> evidence = context.evidence();
-        Instant onset = evidence.stream().filter(e -> e.kind() == Kind.METRIC).map(EvidenceItem::observedAt)
+        // Onset = earliest sustained anomaly; "no sustained anomaly" metrics are context, not symptoms.
+        Instant onset = evidence.stream()
+                .filter(e -> e.kind() == Kind.METRIC && e.summary().contains(" rose from baseline"))
+                .map(EvidenceItem::observedAt)
                 .min(Comparator.naturalOrder())
                 .orElse(evidence.stream().map(EvidenceItem::observedAt).max(Comparator.naturalOrder()).orElse(Instant.now()));
-        String stack = evidence.stream().filter(e -> e.kind() == Kind.STACK_TRACE).map(EvidenceItem::summary)
-                .findFirst().orElse("");
+        // Code the failure runs through: stack frames, and code.filepath attributes on traces.
+        String stack = evidence.stream().filter(e -> e.kind() == Kind.STACK_TRACE || e.kind() == Kind.TRACE)
+                .map(EvidenceItem::summary).collect(java.util.stream.Collectors.joining("\n"));
 
         List<EvidenceItem> candidates = evidence.stream()
                 .filter(e -> e.kind() == Kind.DEPLOY || e.kind() == Kind.FEATURE_FLAG)
@@ -59,7 +63,11 @@ public class PlanMitigationStage implements StageHandler {
                         .thenComparing(EvidenceItem::observedAt, Comparator.reverseOrder()))
                 .toList();
         List<String> alternatives = new ArrayList<>();
-        Optional<String> poison = evidence.stream().filter(e -> e.kind() == Kind.LOG_SIGNATURE)
+        // Only failure signatures can name the poison record; INFO lines for healthy partitions also carry
+        // partition/offset pairs and must not be mistaken for it.
+        Optional<String> poison = evidence.stream()
+                .filter(e -> e.kind() == Kind.LOG_SIGNATURE
+                        && (e.summary().startsWith("WARN") || e.summary().startsWith("ERROR")))
                 .map(e -> POISON.matcher(e.summary())).filter(Matcher::find)
                 .map(m -> "partition " + m.group(1) + " offset " + m.group(2)).findFirst();
         poison.ifPresent(p -> alternatives.add("SKIP_POISON_OFFSET: advance the consumer group past " + p
@@ -78,14 +86,17 @@ public class PlanMitigationStage implements StageHandler {
                 String version = m.find() ? m.group(1) : "the latest deploy";
                 mitigation = new Mitigation("ROLLBACK_DEPLOY", version,
                         "Deploy " + version + " landed " + minutesBefore(best, onset) + " min before the onset"
-                                + (touchesStack(best, stack) ? " and changed files that appear in the failing stack." : "."),
+                                + (touchesStack(best, stack) ? " and changed files that appear in the failing evidence." : "."),
                         "Rolls back every change in " + version + "; the poison record is then handled by the previous "
                                 + "release's error path.", List.of(best.evidenceId()), alternatives, false);
             } else {
                 mitigation = new Mitigation("DISABLE_FEATURE_FLAG", best.summary().split(" ")[1],
-                        "Flag changed " + minutesBefore(best, onset) + " min before the onset.",
-                        "Disables the feature for all users until re-enabled.", List.of(best.evidenceId()),
-                        alternatives, false);
+                        "Flag changed " + minutesBefore(best, onset) + " min before the onset"
+                                + (touchesStack(best, stack) ? " and guards code that appears in the failing evidence."
+                                : "."),
+                        "Turns the feature off for every user in the cohort until a fix ships; reversible by re-enabling. "
+                                + "IncidentForge has no flag write access: an on-call engineer makes this change.",
+                        List.of(best.evidenceId()), alternatives, false);
             }
         } else if (poison.isPresent()) {
             mitigation = new Mitigation("SKIP_POISON_OFFSET", poison.get(), "No deploy or flag change precedes the onset.",

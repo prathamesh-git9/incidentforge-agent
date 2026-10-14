@@ -3,7 +3,22 @@
 IncidentForge turns a one-sentence incident report into an evidence-backed root-cause analysis, a
 mitigation recommendation, and a narrow code fix that has been validated by a real failing-then-passing
 test. A human sees it all before anything leaves the system. It is a portfolio project built
-around a **synthetic** incident; it has not run against real production systems.
+around three **synthetic** incidents; it has not run against real production systems.
+
+## Fixtures and what is per-service
+
+The same skeleton runs three seeded incidents: a Kafka poison event (`orders-consumer`), a slow read
+path (`catalog-api`) and a bad feature-flag rollout (`checkout-api`). Nothing in the stages is
+specific to one of them. What varies is configuration and data:
+
+* `incidentforge.services.<name>`: the one sample repository a patch may touch and the paths inside
+  it (`editable-prefixes`, `new-file-prefixes`), the golden-signal metrics the collector fetches, the
+  trace query (errors, or spans slower than N ms), and the skill domain.
+* A `TelemetryWorld` per service (seeded, deterministic) behind the same MCP tools.
+* `skills/<domain>/` guidance for the model stages.
+* For the offline stand-in only: `OfflineScenarios`, which scripts how to locate the suspect line and
+  which edit to propose. Classification, timeline and change correlation in the offline model are
+  generic rules over the evidence.
 
 ## Pipeline
 
@@ -65,9 +80,16 @@ raw tool payload**, a pruned and redacted summary, and flags (`REDACTED`, `PROMP
 `TRUNCATED`). Any number in an RCA claim can be traced to the tool call that produced it
 (`GET /api/runs/{id}` → `toolCalls[]`).
 
-On the seeded incident the collector makes 19 MCP calls. It pages 27,361 log lines (≈3.1 MB) in
+On the poison-event fixture the collector makes 19 MCP calls. It pages 27,361 log lines (≈3.1 MB) in
 14 pages and reduces them to 8 log signatures plus one stack trace. The whole timeline is about
-16 items and under 9 KB, before any model sees it.
+16 items and under 9 KB, before any model sees it. The catalog fixture reduces 8,585 lines (702 KiB)
+to 8 signatures with 10 MCP calls.
+
+A metric that moved but did not stay anomalous is kept as a "no sustained anomaly … (since recovered)"
+item rather than dropped, because it is evidence about what is *not* the cause. Example: the cache hit
+ratio in the catalog fixture. Trace evidence lists every span attribute for the group (a constant
+value, a numeric range, or up to three distinct values). That is how `db.rows_returned`, `code.lineno`
+or a flag variant reach the investigators.
 
 ## Asynchronous job progression
 
@@ -95,8 +117,9 @@ On the seeded incident the collector makes 19 MCP calls. It pages 27,361 log lin
 
 `/mcp` is a stateless Streamable-HTTP MCP server built on the official MCP Java SDK (`mcp-core` 2.0.1
 plus the Jackson 2 module). It exposes 7 read-only tools defined in `src/main/resources/tools/catalog.json`,
-all annotated `readOnlyHint=true` and backed by the synthetic telemetry world and a sandboxed
-repository reader. The agent calls these tools through a real MCP client (`McpToolClient`) using its
+all annotated `readOnlyHint=true` and backed by the service's synthetic telemetry world and a
+sandboxed repository reader. There is no flag, deploy or repository write tool, so a mitigation such
+as "disable this flag" can only ever be a recommendation. The agent calls these tools through a real MCP client (`McpToolClient`) using its
 own `TOOLS` credential. Arguments are validated against the same JSON Schemas on both sides of the
 boundary.
 

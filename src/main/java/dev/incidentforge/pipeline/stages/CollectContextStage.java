@@ -13,6 +13,7 @@ import dev.incidentforge.evidence.LogPruner;
 import dev.incidentforge.evidence.Redactor;
 import dev.incidentforge.observability.PipelineMetrics;
 import dev.incidentforge.pipeline.StageHandler;
+import dev.incidentforge.repo.ServiceCatalog;
 import dev.incidentforge.tools.ToolGateway;
 import dev.incidentforge.tools.ToolGateway.CallContext;
 import dev.incidentforge.tools.ToolGateway.ToolCallResult;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
@@ -44,13 +46,15 @@ public class CollectContextStage implements StageHandler {
 
     private final ToolGateway tools;
     private final IncidentForgeProperties properties;
+    private final ServiceCatalog services;
     private final ObjectMapper objectMapper;
     private final PipelineMetrics metrics;
 
-    public CollectContextStage(ToolGateway tools, IncidentForgeProperties properties, ObjectMapper objectMapper,
-                               PipelineMetrics metrics) {
+    public CollectContextStage(ToolGateway tools, IncidentForgeProperties properties, ServiceCatalog services,
+                               ObjectMapper objectMapper, PipelineMetrics metrics) {
         this.tools = tools;
         this.properties = properties;
+        this.services = services;
         this.objectMapper = objectMapper;
         this.metrics = metrics;
     }
@@ -71,7 +75,8 @@ public class CollectContextStage implements StageHandler {
         List<EvidenceItem> items = new ArrayList<>();
         int toolCalls = 0;
 
-        for (String metric : List.of("consumer_lag", "cpu_utilization")) {
+        IncidentForgeProperties.ServiceProfile profile = services.require(service);
+        for (String metric : profile.metrics()) {
             ToolCallResult result = tools.call(call, "metrics_query", Map.of("service", service, "metric", metric,
                     "from", detected.minus(limits.metricLookback()).toString(), "to", detected.toString()));
             toolCalls++;
@@ -124,8 +129,12 @@ public class CollectContextStage implements StageHandler {
                         + " signatures"));
         metrics.contextBytes("raw", pruned.rawBytes());
 
-        ToolCallResult traces = tools.call(call, "traces_search", Map.of("service", service, "from", from.toString(),
-                "to", detected.toString(), "status", "ERROR", "limit", 50));
+        Map<String, Object> traceQuery = new LinkedHashMap<>(Map.of("service", service, "from", from.toString(),
+                "to", detected.toString(), "status", profile.traces().status(), "limit", 50));
+        if (profile.traces().minDurationMs() != null) {
+            traceQuery.put("minDurationMs", profile.traces().minDurationMs());
+        }
+        ToolCallResult traces = tools.call(call, "traces_search", traceQuery);
         toolCalls++;
         if (traces.ok()) {
             items.addAll(summarizeTraces(json(traces.text()), traces));
@@ -150,10 +159,13 @@ public class CollectContextStage implements StageHandler {
             for (JsonNode f : json(flags.text()).path("flags")) {
                 Instant changed = Instant.parse(f.path("changedAt").asText());
                 if (changed.isAfter(detected.minus(Duration.ofHours(24)))) {
+                    List<String> codeRefs = new ArrayList<>();
+                    f.path("codeRefs").forEach(r -> codeRefs.add(r.asText()));
                     items.add(item(Kind.FEATURE_FLAG, "flags_list", flags.callId(), changed, flags.sha256(),
                             "flag " + f.path("key").asText() + " enabled=" + f.path("enabled").asBoolean() + " rollout="
                                     + f.path("rolloutPercent").asInt() + "% changed at " + changed + ": "
-                                    + f.path("description").asText()));
+                                    + f.path("description").asText()
+                                    + (codeRefs.isEmpty() ? "" : "\ncode refs: " + String.join(", ", codeRefs))));
                 }
             }
         }
@@ -207,7 +219,10 @@ public class CollectContextStage implements StageHandler {
     private java.util.Optional<EvidenceItem> analyzeMetric(String metric, JsonNode body, ToolCallResult result) {
         record Analysis(String labels, double baseline, double peak, Instant onset) {
         }
+        record Deviation(String labels, double baseline, double latest, double value, Instant at, double size) {
+        }
         List<Analysis> anomalies = new ArrayList<>();
+        Deviation largest = null;
         int flat = 0;
         double flatBaseline = 0;
         for (JsonNode series : body.path("series")) {
@@ -228,17 +243,31 @@ public class CollectContextStage implements StageHandler {
                 while (onsetIndex > 0 && values[onsetIndex - 1] > baseline * 2) {
                     onsetIndex--;
                 }
-                Map<String, String> labels = new TreeMap<>();
-                series.path("labels").fields().forEachRemaining(e -> labels.put(e.getKey(), e.getValue().asText()));
-                anomalies.add(new Analysis(labels.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue())
-                        .collect(Collectors.joining(" ")), baseline, peak, times.get(onsetIndex)));
+                anomalies.add(new Analysis(labels(series), baseline, peak, times.get(onsetIndex)));
             } else {
                 flat++;
                 flatBaseline += baseline;
+                for (int i = 0; i < values.length; i++) {
+                    double size = baseline == 0 ? 0 : Math.abs(values[i] - baseline) / baseline;
+                    if (largest == null || size > largest.size()) {
+                        largest = new Deviation(labels(series), baseline, peak, values[i], times.get(i), size);
+                    }
+                }
             }
         }
         if (anomalies.isEmpty()) {
-            return java.util.Optional.empty();
+            if (largest == null) {
+                return java.util.Optional.empty();
+            }
+            // Recorded on purpose: a signal that moved and came back is evidence about what is NOT the cause.
+            boolean recovered = Math.abs(largest.latest() - largest.baseline())
+                    < Math.abs(largest.value() - largest.baseline()) / 2;
+            String summary = metric + " " + largest.labels() + " no sustained anomaly: baseline ~"
+                    + format(largest.baseline()) + ", latest " + format(largest.latest()) + "; largest deviation "
+                    + format(largest.value()) + " at " + largest.at().truncatedTo(ChronoUnit.MINUTES)
+                    + (recovered ? " (since recovered)" : "");
+            return java.util.Optional.of(item(Kind.METRIC, "metrics_query", result.callId(), largest.at(),
+                    result.sha256(), summary));
         }
         Analysis top = anomalies.stream().max(Comparator.comparingDouble(a -> a.peak() / a.baseline())).orElseThrow();
         String summary = metric + " " + top.labels() + " rose from baseline ~" + format(top.baseline()) + " to "
@@ -249,26 +278,56 @@ public class CollectContextStage implements StageHandler {
                 summary));
     }
 
+    private static String labels(JsonNode series) {
+        Map<String, String> labels = new TreeMap<>();
+        series.path("labels").fields().forEachRemaining(e -> labels.put(e.getKey(), e.getValue().asText()));
+        return labels.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()).collect(Collectors.joining(" "));
+    }
+
+    /**
+     * Groups spans by name, status, exception and code location, and summarizes each group: count,
+     * duration, and every attribute (a constant value, a numeric range, or up to three distinct values).
+     */
     private List<EvidenceItem> summarizeTraces(JsonNode body, ToolCallResult result) {
         Map<String, List<JsonNode>> groups = new LinkedHashMap<>();
         for (JsonNode span : body.path("spans")) {
             JsonNode a = span.path("attributes");
-            String key = a.path("exception.type").asText("?") + " partition=" + a.path("messaging.kafka.partition").asText("?")
-                    + " offset=" + a.path("messaging.kafka.offset").asText("?");
+            String key = span.path("name").asText() + "|" + span.path("status").asText() + "|"
+                    + a.path("exception.type").asText("") + "|" + a.path("code.function").asText("");
             groups.computeIfAbsent(key, k -> new ArrayList<>()).add(span);
         }
         List<EvidenceItem> out = new ArrayList<>();
-        for (Map.Entry<String, List<JsonNode>> group : groups.entrySet()) {
-            JsonNode firstSpan = group.getValue().getFirst();
-            JsonNode lastSpan = group.getValue().getLast();
-            out.add(item(Kind.TRACE, "traces_search", result.callId(), Instant.parse(firstSpan.path("start").asText()),
-                    result.sha256(), body.path("totalMatched").asInt() + " ERROR spans matched (" + group.getValue().size()
-                            + " sampled) for '" + firstSpan.path("name").asText() + "' with " + group.getKey()
-                            + "; exception.message=" + firstSpan.path("attributes").path("exception.message").asText()
-                            + "; retry.attempt up to " + lastSpan.path("attributes").path("retry.attempt").asText()
-                            + "; example traceId=" + firstSpan.path("traceId").asText()));
+        for (List<JsonNode> group : groups.values()) {
+            JsonNode first = group.getFirst();
+            long[] durations = group.stream().mapToLong(sp -> sp.path("durationMs").asLong()).sorted().toArray();
+            Map<String, TreeSet<String>> values = new TreeMap<>();
+            for (JsonNode span : group) {
+                span.path("attributes").fields().forEachRemaining(e ->
+                        values.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).add(e.getValue().asText()));
+            }
+            String attributes = values.entrySet().stream()
+                    .map(e -> e.getKey() + "=" + describe(e.getValue()))
+                    .collect(Collectors.joining("; "));
+            out.add(item(Kind.TRACE, "traces_search", result.callId(), Instant.parse(first.path("start").asText()),
+                    result.sha256(), body.path("totalMatched").asInt() + " spans matched the query (" + group.size()
+                            + " sampled in this group) for '" + first.path("name").asText() + "' status="
+                            + first.path("status").asText() + "; duration median " + durations[durations.length / 2]
+                            + "ms max " + durations[durations.length - 1] + "ms; " + attributes
+                            + "; example traceId=" + first.path("traceId").asText()));
         }
         return out;
+    }
+
+    private static String describe(TreeSet<String> distinct) {
+        if (distinct.size() == 1) {
+            return distinct.first();
+        }
+        if (distinct.stream().allMatch(v -> v.matches("-?\\d{1,18}"))) {
+            long[] numbers = distinct.stream().mapToLong(Long::parseLong).sorted().toArray();
+            return numbers[0] + ".." + numbers[numbers.length - 1];
+        }
+        String shown = distinct.stream().limit(3).collect(Collectors.joining("|"));
+        return distinct.size() > 3 ? shown + "|(+" + (distinct.size() - 3) + " more)" : shown;
     }
 
     private static EvidenceItem item(Kind kind, String tool, String callId, Instant observedAt, String sha, String summary) {

@@ -4,10 +4,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.incidentforge.repo.RepositoryReader;
 import dev.incidentforge.repo.ServiceCatalog;
-import dev.incidentforge.telemetry.SyntheticTelemetry;
-import dev.incidentforge.telemetry.SyntheticTelemetry.LogEntry;
-import dev.incidentforge.telemetry.SyntheticTelemetry.Series;
-import dev.incidentforge.telemetry.SyntheticTelemetry.Span;
+import dev.incidentforge.telemetry.TelemetryWorld;
+import dev.incidentforge.telemetry.TelemetryWorld.LogEntry;
+import dev.incidentforge.telemetry.TelemetryWorld.Series;
+import dev.incidentforge.telemetry.TelemetryWorld.Span;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
@@ -27,14 +27,19 @@ public class TelemetryToolHandlers {
 
     private static final List<String> LEVELS = List.of("DEBUG", "INFO", "WARN", "ERROR");
 
-    private final SyntheticTelemetry telemetry;
+    private final Map<String, TelemetryWorld> worlds;
     private final ServiceCatalog services;
     private final ObjectMapper objectMapper;
 
-    public TelemetryToolHandlers(SyntheticTelemetry telemetry, ServiceCatalog services, ObjectMapper objectMapper) {
-        this.telemetry = telemetry;
+    public TelemetryToolHandlers(List<TelemetryWorld> worlds, ServiceCatalog services, ObjectMapper objectMapper) {
+        this.worlds = worlds.stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
+                TelemetryWorld::service, w -> w));
         this.services = services;
         this.objectMapper = objectMapper;
+    }
+
+    private TelemetryWorld world(Map<String, Object> args) {
+        return worlds.get((String) args.get("service"));
     }
 
     public Map<String, Function<Map<String, Object>, CallToolResult>> handlers() {
@@ -56,7 +61,7 @@ public class TelemetryToolHandlers {
             String query = (String) args.get("query");
             int cursor = intArg(args, "cursor", 0);
             int limit = intArg(args, "limit", 500);
-            List<LogEntry> matched = telemetry.logs().stream()
+            List<LogEntry> matched = world(args).logs().stream()
                     .filter(e -> !e.timestamp().isBefore(from) && e.timestamp().isBefore(to))
                     .filter(e -> LEVELS.indexOf(e.level()) >= minLevel)
                     .filter(e -> query == null || e.message().toLowerCase().contains(query.toLowerCase()))
@@ -76,7 +81,7 @@ public class TelemetryToolHandlers {
             Instant from = instant(args, "from");
             Instant to = instant(args, "to");
             String metric = (String) args.get("metric");
-            List<Series> series = telemetry.metric(metric).stream()
+            List<Series> series = world(args).metric(metric).stream()
                     .map(s -> new Series(s.labels(), s.points().stream()
                             .filter(p -> !p.timestamp().isBefore(from) && !p.timestamp().isAfter(to))
                             .toList()))
@@ -91,9 +96,11 @@ public class TelemetryToolHandlers {
             Instant to = instant(args, "to");
             String status = (String) args.getOrDefault("status", "ANY");
             int limit = intArg(args, "limit", 20);
-            List<Span> matched = telemetry.spans().stream()
+            int minDurationMs = intArg(args, "minDurationMs", 0);
+            List<Span> matched = world(args).spans().stream()
                     .filter(s -> !s.start().isBefore(from) && s.start().isBefore(to))
                     .filter(s -> "ANY".equals(status) || s.status().equals(status))
+                    .filter(s -> s.durationMs() >= minDurationMs)
                     .toList();
             return Map.of("totalMatched", matched.size(), "spans", matched.stream().limit(limit).toList());
         });
@@ -102,12 +109,12 @@ public class TelemetryToolHandlers {
     CallToolResult deploysList(Map<String, Object> args) {
         return guarded(args, true, () -> {
             Instant since = instant(args, "since");
-            return Map.of("deploys", telemetry.deploys().stream().filter(d -> !d.at().isBefore(since)).toList());
+            return Map.of("deploys", world(args).deploys().stream().filter(d -> !d.at().isBefore(since)).toList());
         });
     }
 
     CallToolResult flagsList(Map<String, Object> args) {
-        return guarded(args, true, () -> Map.of("flags", telemetry.flags()));
+        return guarded(args, true, () -> Map.of("flags", world(args).flags()));
     }
 
     CallToolResult codeSearch(Map<String, Object> args) {
@@ -135,7 +142,7 @@ public class TelemetryToolHandlers {
         if (services.find(service).isEmpty()) {
             return error("unknown or non-allowlisted service: " + service);
         }
-        if (telemetryTool && !SyntheticTelemetry.SERVICE.equals(service)) {
+        if (telemetryTool && !worlds.containsKey(service)) {
             return error("no telemetry source configured for service: " + service);
         }
         try {

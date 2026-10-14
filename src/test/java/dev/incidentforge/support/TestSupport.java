@@ -51,10 +51,54 @@ public final class TestSupport {
     }
 
     public static String sampleIncident() {
+        return incident("orders-consumer-lag.json");
+    }
+
+    public static String incident(String fixture) {
         try {
-            return Files.readString(Path.of("samples", "incidents", "orders-consumer-lag.json"));
+            return Files.readString(Path.of("samples", "incidents", fixture));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** Files a fixture as the reporter and returns the run id. */
+    public static String submit(org.springframework.boot.test.web.client.TestRestTemplate rest, String fixture) {
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        return rest.withBasicAuth("reporter", "demo-reporter-only")
+                .exchange("/api/incidents", org.springframework.http.HttpMethod.POST,
+                        new org.springframework.http.HttpEntity<>(incident(fixture), headers),
+                        com.fasterxml.jackson.databind.JsonNode.class)
+                .getBody().path("runId").asText();
+    }
+
+    /** Polls the run as the reviewer until it reaches {@code status}; fails fast if it stops elsewhere. */
+    public static com.fasterxml.jackson.databind.JsonNode awaitRun(
+            org.springframework.boot.test.web.client.TestRestTemplate rest, String runId, String status) {
+        org.springframework.boot.test.web.client.TestRestTemplate reviewer =
+                rest.withBasicAuth("reviewer", "demo-reviewer-only");
+        com.fasterxml.jackson.databind.JsonNode[] last = new com.fasterxml.jackson.databind.JsonNode[1];
+        await("run " + runId + " to reach " + status, Duration.ofMinutes(4), () -> {
+            last[0] = reviewer.getForObject("/api/runs/" + runId, com.fasterxml.jackson.databind.JsonNode.class);
+            String current = last[0].path("status").asText();
+            if (!current.equals(status) && !current.equals("IN_PROGRESS") && !current.equals("PUBLISHING")) {
+                throw new AssertionError("run ended in " + current + ": " + last[0].path("statusReason").asText()
+                        + " timeline=" + last[0].path("timeline"));
+            }
+            return current.equals(status);
+        });
+        return last[0];
+    }
+
+    /** The evidence item whose summary contains {@code text}. */
+    public static com.fasterxml.jackson.databind.JsonNode evidence(com.fasterxml.jackson.databind.JsonNode run,
+                                                                   String kind, String text) {
+        for (com.fasterxml.jackson.databind.JsonNode e : run.path("evidence")) {
+            if (e.path("kind").asText().equals(kind) && e.path("summary").asText().contains(text)) {
+                return e;
+            }
+        }
+        throw new AssertionError("no " + kind + " evidence containing '" + text + "' in " + run.path("evidence"));
     }
 }

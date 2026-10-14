@@ -1,0 +1,11 @@
+{
+  "service": "catalog-api",
+  "summary": "product pages for our best sellers take several seconds to load since this morning",
+  "reportedBy": "synthetic-support-ticket",
+  "environment": "prod-sim",
+  "metadata": {
+    "version": "2.4.0",
+    "route": "/products/{id}",
+    "detectedAt": "2026-10-13T10:05:00Z"
+  }
+}

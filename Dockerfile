@@ -15,9 +15,9 @@ RUN useradd --create-home --uid 10001 incidentforge
 WORKDIR /app
 COPY --from=build /src/target/incidentforge-agent.jar app.jar
 COPY sample-repo sample-repo
-# Warm the sample repository's dependencies so validation does not need network access later,
+# Warm every sample repository's dependencies so validation does not need network access later,
 # then hand everything to the unprivileged runtime user.
-RUN cd sample-repo/orders-consumer && mvn -B -q test && rm -rf target \
+RUN for repo in sample-repo/*/; do (cd "$repo" && mvn -B -q test && rm -rf target) || exit 1; done \
     && chown -R incidentforge /app /opt/m2
 USER incidentforge
 EXPOSE 8080

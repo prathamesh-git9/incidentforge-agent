@@ -55,7 +55,8 @@ public class InvestigateStage implements StageHandler {
             new Investigator("change-investigator",
                     "Correlate the onset with deploys and feature-flag changes; prefer changes whose files appear in the "
                             + "failing stack. Say which candidate changes you ruled out and why.",
-                    e -> Set.of(Kind.DEPLOY, Kind.FEATURE_FLAG, Kind.METRIC, Kind.STACK_TRACE).contains(e.kind()),
+                    e -> Set.of(Kind.DEPLOY, Kind.FEATURE_FLAG, Kind.METRIC, Kind.STACK_TRACE, Kind.TRACE)
+                            .contains(e.kind()),
                     Set.of("deploys_list")),
             new Investigator("code-path-investigator",
                     "Map the failure to the exact code path. Use code_search/code_read to find the handler responsible "

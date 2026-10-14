@@ -26,7 +26,7 @@
       "required": ["service", "metric", "from", "to"],
       "properties": {
         "service": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,40}$"},
-        "metric": {"type": "string", "enum": ["consumer_lag", "cpu_utilization", "throughput"]},
+        "metric": {"type": "string", "enum": ["consumer_lag", "cpu_utilization", "throughput", "http_latency_p95_ms", "cache_hit_ratio", "error_rate_percent", "payment_latency_p95_ms"]},
         "from": {"type": "string", "maxLength": 40},
         "to": {"type": "string", "maxLength": 40}
       }
@@ -34,7 +34,7 @@
   },
   {
     "name": "traces_search",
-    "description": "Search distributed-tracing spans for a service. Read-only.",
+    "description": "Search distributed-tracing spans for a service, optionally only those slower than minDurationMs. Read-only.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -44,6 +44,7 @@
         "from": {"type": "string", "maxLength": 40},
         "to": {"type": "string", "maxLength": 40},
         "status": {"type": "string", "enum": ["ERROR", "OK", "ANY"]},
+        "minDurationMs": {"type": "integer", "minimum": 0, "maximum": 600000},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50}
       }
     }

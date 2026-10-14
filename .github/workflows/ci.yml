@@ -20,8 +20,7 @@ jobs:
           java-version: "21"
           cache: maven
       - name: Sample repository tests (the code IncidentForge is allowed to patch)
-        run: mvn -B --no-transfer-progress test
-        working-directory: sample-repo/orders-consumer
+        run: for repo in sample-repo/*/; do mvn -B --no-transfer-progress -f "$repo/pom.xml" test; done
       - name: Build and test IncidentForge (offline model, embedded Kafka, real Maven validation)
         run: mvn -B --no-transfer-progress verify
       - name: Upload test reports

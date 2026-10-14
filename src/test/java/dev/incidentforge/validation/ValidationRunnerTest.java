@@ -80,6 +80,23 @@ class ValidationRunnerTest {
         assertThat(report.passed()).isFalse();
     }
 
+    @Test
+    void childOutputInTheConsoleCodePageIsReadNotMisreportedAsMissingMaven() throws Exception {
+        // Surefire prints "Test.method:16 » NullPointer ..." for a test *error*; a Windows child JVM
+        // may emit '»' as the single cp1252 byte 0xBB, which is invalid UTF-8.
+        java.nio.file.Path log = java.nio.file.Files.createTempFile("maven-output", ".log");
+        byte[] prefix = "[ERROR]   TaxEngineFallbackReproTest.region:16 ".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] suffix = " NullPointer Cannot invoke".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] bytes = new byte[prefix.length + 1 + suffix.length];
+        System.arraycopy(prefix, 0, bytes, 0, prefix.length);
+        bytes[prefix.length] = (byte) 0xBB;
+        System.arraycopy(suffix, 0, bytes, prefix.length + 1, suffix.length);
+        java.nio.file.Files.write(log, bytes);
+
+        assertThat(ValidationRunner.readOutput(log)).contains("TaxEngineFallbackReproTest", "NullPointer");
+        java.nio.file.Files.delete(log);
+    }
+
     private ValidationReport validate(String search, String replace, String test) {
         ProposedPatch patch = new ProposedPatch("test", List.of(new FileEdit(PROCESSOR, search, replace)),
                 List.of(new NewFile("src/test/java/com/example/orders/PoisonReproTest.java", test)),

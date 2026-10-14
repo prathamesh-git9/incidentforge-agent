@@ -99,8 +99,13 @@ public class ValidationRunner {
         builder.environment().keySet().removeIf(name -> SECRET_ENV.matcher(name).matches()
                 || name.startsWith("GITHUB_") || name.startsWith("ANTHROPIC_") || name.startsWith("INCIDENTFORGE_"));
         long started = System.nanoTime();
+        Process process;
         try {
-            Process process = builder.start();
+            process = builder.start();
+        } catch (IOException e) {
+            throw new UncheckedIOException("Could not start Maven for validation (is it on PATH?)", e);
+        }
+        try {
             boolean finished = process.waitFor(config.timeout().toMillis(), TimeUnit.MILLISECONDS);
             if (!finished) {
                 process.descendants().forEach(ProcessHandle::destroyForcibly);
@@ -109,12 +114,23 @@ public class ValidationRunner {
             long durationMs = (System.nanoTime() - started) / 1_000_000;
             int exit = finished ? process.exitValue() : -1;
             return new CommandRun(List.copyOf(command), exit, !finished, durationMs,
-                    tail(Files.readString(log, StandardCharsets.UTF_8), config.maxOutputChars()));
-        } catch (IOException e) {
-            throw new UncheckedIOException("Could not run Maven for validation (is it on PATH?)", e);
+                    tail(readOutput(log), config.maxOutputChars()));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Validation interrupted", e);
+        }
+    }
+
+    /**
+     * Child output is decoded leniently: on Windows the forked JVM may write in the console code page
+     * (e.g. Surefire's '»' as byte 0xBB), and a strict UTF-8 read would turn an ordinary test error
+     * into a bogus "Maven not found" failure.
+     */
+    static String readOutput(Path log) {
+        try {
+            return new String(Files.readAllBytes(log), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Could not read Maven output from " + log.getFileName(), e);
         }
     }
 

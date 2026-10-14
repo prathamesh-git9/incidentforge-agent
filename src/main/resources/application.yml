@@ -57,12 +57,36 @@ incidentforge:
   # in-memory | kafka. Both use the same transactional outbox and the same idempotent command processor.
   bus: kafka
   work-dir: ./target/incidentforge-work
+  # Every investigable service, the one repository (and paths in it) a patch may touch, and what the
+  # deterministic collector fetches. Each has a seeded synthetic telemetry world (dev.incidentforge.telemetry).
   services:
     orders-consumer:
       domain: kafka-consumer
       repository: ./sample-repo/orders-consumer
       repository-id: orders-consumer
       owner: team-orders (synthetic)
+      editable-prefixes: [src/main/java/com/example/orders/]
+      new-file-prefixes: [src/test/java/com/example/orders/]
+      metrics: [consumer_lag, cpu_utilization]
+      traces: {status: ERROR}
+    catalog-api:
+      domain: http-read-path
+      repository: ./sample-repo/catalog-api
+      repository-id: catalog-api
+      owner: team-catalog (synthetic)
+      editable-prefixes: [src/main/java/com/example/catalog/]
+      new-file-prefixes: [src/test/java/com/example/catalog/]
+      metrics: [http_latency_p95_ms, cache_hit_ratio]
+      traces: {status: ANY, min-duration-ms: 1000}
+    checkout-api:
+      domain: feature-rollout
+      repository: ./sample-repo/checkout-api
+      repository-id: checkout-api
+      owner: team-checkout (synthetic)
+      editable-prefixes: [src/main/java/com/example/checkout/]
+      new-file-prefixes: [src/test/java/com/example/checkout/]
+      metrics: [error_rate_percent, payment_latency_p95_ms]
+      traces: {status: ERROR}
   llm:
     # offline | anthropic
     provider: offline
@@ -103,10 +127,7 @@ incidentforge:
     max-evidence-chars: 9000
     max-tool-result-chars: 6000
   patch:
-    editable-prefixes:
-      - src/main/java/com/example/orders/
-    new-file-prefixes:
-      - src/test/java/com/example/orders/
+    # path allowlists are per service (incidentforge.services.*.editable-prefixes / new-file-prefixes)
     max-files: 3
     max-changed-lines: 80
     forbidden-patterns:

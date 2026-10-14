@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
  */
 class SeededIncidentConsistencyTest {
 
-    private static final Pattern FRAME = Pattern.compile("at com\\.example\\.orders\\.(\\w+)\\.(\\w+)\\((\\w+\\.java):(\\d+)\\)");
+    private static final Pattern FRAME = Pattern.compile("at com\\.example\\.\\w+\\.(\\w+)\\.(\\w+)\\((\\w+\\.java):(\\d+)\\)");
 
     @Test
     void stackFramesPointAtRealLinesInTheSampleRepository() {
@@ -36,6 +36,52 @@ class SeededIncidentConsistencyTest {
             }
         }
         assertThat(frames).isEqualTo(4);
+    }
+
+    @Test
+    void catalogSlowSpansPointAtTheLoadAllQueryAndOnlyHotProductsAreSlow() {
+        RepositoryReader repo = new RepositoryReader(java.nio.file.Path.of("sample-repo", "catalog-api"));
+        CatalogLatencyWorld world = new CatalogLatencyWorld();
+
+        assertThat(repo.read(CatalogLatencyWorld.DETAIL_FILE, CatalogLatencyWorld.DETAIL_LINE,
+                CatalogLatencyWorld.DETAIL_LINE).content()).contains("reviews.findByProductId(productId)");
+        assertThat(world.spans()).filteredOn(s -> s.durationMs() >= 1000).isNotEmpty().allSatisfy(s -> {
+            assertThat(s.attributes()).containsEntry("code.lineno", String.valueOf(CatalogLatencyWorld.DETAIL_LINE))
+                    .containsEntry("cache.product_hit", "true");
+            assertThat(Integer.parseInt(s.attributes().get("db.rows_returned"))).isGreaterThan(10_000);
+            assertThat(s.start()).isAfterOrEqualTo(CatalogLatencyWorld.ONSET);
+        });
+        assertThat(world.spans()).filteredOn(s -> s.durationMs() < 1000)
+                .allSatisfy(s -> assertThat(s.attributes()).doesNotContainKey("db.rows_returned"));
+        assertThat(new CatalogLatencyWorld().logs()).isEqualTo(world.logs());
+    }
+
+    @Test
+    void checkoutStackFramesPointAtRealLinesAndOnlyFlaggedSwissQuotesFail() {
+        RepositoryReader repo = new RepositoryReader(java.nio.file.Path.of("sample-repo", "checkout-api"));
+        Matcher m = FRAME.matcher(CheckoutRolloutWorld.STACK);
+        int frames = 0;
+        while (m.find()) {
+            frames++;
+            String path = "src/main/java/com/example/checkout/" + m.group(3);
+            int line = Integer.parseInt(m.group(4));
+            String text = repo.read(path, line, line).content();
+            switch (m.group(2) + ":" + line) {
+                case "taxMinor:23" -> assertThat(text).contains("RATES_BP.get(region)");
+                case "quote:22" -> assertThat(text).contains("calculator.taxMinor(");
+                default -> throw new AssertionError("unexpected frame " + m.group());
+            }
+        }
+        assertThat(frames).isEqualTo(2);
+
+        CheckoutRolloutWorld world = new CheckoutRolloutWorld();
+        assertThat(world.logs()).filteredOn(e -> e.level().equals("ERROR")).isNotEmpty().allSatisfy(e -> {
+            assertThat(e.message()).contains("region=CH engine=v2");
+            assertThat(e.timestamp()).isAfterOrEqualTo(CheckoutRolloutWorld.FLAG_RAMP);
+        });
+        assertThat(world.logs()).anySatisfy(e -> assertThat(e.message()).contains("region=CH engine=legacy"));
+        assertThat(world.deploys()).allSatisfy(d -> assertThat(d.at()).isBefore(CheckoutRolloutWorld.FLAG_RAMP
+                .minus(java.time.Duration.ofDays(2))));
     }
 
     @Test

@@ -25,8 +25,17 @@ public record IncidentForgeProperties(
         Pipeline pipeline,
         Security security) {
 
-    /** A service IncidentForge is allowed to investigate, and the single repository it may patch. */
-    public record ServiceProfile(String domain, Path repository, String owner, String repositoryId) {
+    /**
+     * A service IncidentForge is allowed to investigate: the single repository it may patch (and
+     * where in it), and what the deterministic collector fetches for it.
+     */
+    public record ServiceProfile(String domain, Path repository, String owner, String repositoryId,
+                                 List<String> editablePrefixes, List<String> newFilePrefixes,
+                                 List<String> metrics, TraceQuery traces) {
+    }
+
+    /** Which spans the collector asks for: errors, or slow spans regardless of status. */
+    public record TraceQuery(String status, Integer minDurationMs) {
     }
 
     public record Llm(String provider, Anthropic anthropic) {
@@ -45,8 +54,7 @@ public record IncidentForgeProperties(
                                 int maxSignatures, int maxEvidenceChars, int maxToolResultChars) {
     }
 
-    public record PatchRules(List<String> editablePrefixes, List<String> newFilePrefixes, int maxFiles,
-                             int maxChangedLines, List<String> forbiddenPatterns) {
+    public record PatchRules(int maxFiles, int maxChangedLines, List<String> forbiddenPatterns) {
     }
 
     public record Validation(String mavenExecutable, Duration timeout, boolean offline, int maxOutputChars) {

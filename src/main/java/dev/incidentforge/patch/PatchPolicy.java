@@ -30,14 +30,16 @@ public class PatchPolicy {
         this.rules = properties.patch();
     }
 
-    public List<Violation> check(ProposedPatch patch, RepositoryReader repo) {
+    /** Checks a patch against the global rules and the target service's own path allowlist. */
+    public List<Violation> check(ProposedPatch patch, RepositoryReader repo,
+                                 IncidentForgeProperties.ServiceProfile service) {
         List<Violation> violations = new ArrayList<>();
         if (patch.edits().isEmpty()) {
             violations.add(new Violation(Severity.QUALITY, "patch changes no production code"));
         }
         Set<String> paths = new HashSet<>();
         for (FileEdit edit : patch.edits()) {
-            checkPath(edit.path(), rules.editablePrefixes(), violations);
+            checkPath(edit.path(), service.editablePrefixes(), violations);
             paths.add(edit.path());
             checkContent(edit.path(), edit.replace(), violations);
             if (isSafe(edit.path())) {
@@ -53,7 +55,7 @@ public class PatchPolicy {
             }
         }
         for (NewFile file : patch.newFiles()) {
-            checkPath(file.path(), rules.newFilePrefixes(), violations);
+            checkPath(file.path(), service.newFilePrefixes(), violations);
             paths.add(file.path());
             checkContent(file.path(), file.content(), violations);
             if (isSafe(file.path()) && repo.exists(file.path())) {

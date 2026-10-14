@@ -14,8 +14,8 @@ pod is pinned at high CPU"*) and works through:
 Stage-to-stage progression runs over **Kafka** (or an in-memory bus with identical semantics), and
 the whole path runs offline without credentials.
 
-> **Scope, honestly:** this is a portfolio project built in October 2026 around a **seeded, synthetic
-> incident** in a small sample service (`sample-repo/orders-consumer`). It has not run against real
+> **Scope, honestly:** this is a portfolio project built in October 2026 around **three seeded, synthetic
+> incidents** in small sample services (`sample-repo/*`). It has not run against real
 > production systems or traffic, and the offline "model" is a scripted stand-in (see
 > [Limitations](#limitations)). The design was informed by a public talk; see
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#engineering-lessons-taken-from-the-source-talk).
@@ -24,7 +24,21 @@ the whole path runs offline without credentials.
 official Anthropic Java SDK (Claude adapter), H2/JDBC, Micrometer (metrics + observations), JUnit 5 /
 embedded KRaft Kafka.
 
-## The seeded incident
+## The seeded incidents
+
+All three fixtures run through the same stages, MCP tools, budgets, validator and approval boundary.
+They need different evidence and lead to different decisions:
+
+| Fixture (`samples/incidents/`) | Service / sample repo | What the evidence shows | Mitigation (recommended, never executed) | Permanent fix, proven by |
+|---|---|---|---|---|
+| `orders-consumer-lag.json` | `orders-consumer` | one partition's lag, 14k identical "rewinding for retry" warnings, a stack trace, an injection payload | roll back 1.8.3 | dead-letter the poison event and commit past it; repro test on committed offsets |
+| `catalog-slow-product-page.json` | `catalog-api` | one route's p95 ×21, slow spans with tens of thousands of `db.rows_returned`, a cache dip that **recovered** while latency did not | roll back 2.4.0 | use the existing aggregate/top-N queries instead of loading every review; repro test on **rows read**, not time; no cache added |
+| `checkout-quote-errors.json` | `checkout-api` | errors for region CH only, same version everywhere, a flag ramp whose code refs match the failing frame | **disable `checkout.new-tax-engine`** (nothing to roll back) | restore the legacy fallback for regions outside the new tax table; repro test on the flag-on path |
+
+Details for each, with the decisions and follow-up questions, are in
+[docs/interview-stories.md](docs/interview-stories.md).
+
+### Fixture 1: Kafka poison event (`orders-consumer`)
 
 Release `1.8.3` of `orders-consumer` made amount parsing strict and changed parse failures from
 "dead-letter" to "seek back and retry". At 10:41:07 an event with amount `12,50` arrives on partition 3.
@@ -39,8 +53,32 @@ The world (`SyntheticTelemetry`, fixed seed) also contains distractors:
 * a **prompt-injection payload** inside the poison event, telling AI agents to merge their own PR and
   disable CI.
 
-`SeededIncidentConsistencyTest` checks that every stack frame in the telemetry points to the real
-line in the sample repository.
+### Fixture 2: slow read path (`catalog-api`)
+
+Release `2.4.0` (09:30) adds a review summary to the product page by loading every review row. Products
+with tens of thousands of reviews take ~2.4 s, so `/products/{id}` p95 jumps while `/search` stays flat.
+
+Distractors:
+
+* the restart empties the product cache, producing cache-miss warnings and a hit-ratio dip that
+  recovers by 09:50 (the slow spans are cache *hits*);
+* a search-ranking flag ramp 21 minutes earlier;
+* an older search deploy.
+
+### Fixture 3: bad feature-flag rollout (`checkout-api`)
+
+Nothing is deployed. At 14:02 `checkout.new-tax-engine` ramps to 25%, and the new engine has lost its
+fallback for regions outside its rate table, so flagged Swiss (CH) quotes throw a NullPointerException.
+
+Distractors:
+
+* payment-gateway latency warnings that are as frequent before the onset as after;
+* an express-pay flag change;
+* a three-day-old deploy that only touched the payment client.
+
+`SeededIncidentConsistencyTest` checks that every stack frame and every trace `code.filepath`/`code.lineno`
+in the three telemetry worlds points to the real line in its sample repository, and that each world is
+deterministic.
 
 ## Quick start (offline, no credentials, no Docker)
 
@@ -48,8 +86,10 @@ Prerequisites: JDK 21+ and Maven 3.9+ on `PATH`. The validator shells out to `mv
 `python3` are needed only for the demo script's output.
 
 ```bash
-mvn -B verify               # 30 tests, including embedded Kafka and real Maven validation (~2.5 min)
+mvn -B verify               # 36 tests, including embedded Kafka and real Maven validation (~3 min)
 bash scripts/demo.sh        # builds, starts the app offline, runs the incident, approves, publishes
+FIXTURE=catalog-slow-product-page.json bash scripts/demo.sh   # the slow-read-path incident
+FIXTURE=checkout-quote-errors.json     bash scripts/demo.sh   # the bad-rollout incident
 ```
 
 Or step by step:
@@ -192,21 +232,23 @@ exposes seven read-only tools: `logs_search`, `metrics_query`, `traces_search`, 
 | `POST /mcp` | TOOLS | MCP JSON-RPC |
 | `GET /actuator/prometheus`, `/actuator/health` | public | metrics, health |
 
-## Tests (`mvn -B verify`: 30 tests, 0 failures, ~2.5 min on the author's Windows laptop)
+## Tests (`mvn -B verify`: 36 tests, 0 failures, ~3 min on the author's Windows laptop)
 
 | Test | What it proves |
 |---|---|
 | `OfflineEndToEndTest` | Full slice over REST: idempotent intake; evidence provenance, redaction and injection flag; verified suspect location; cited claims only; mitigation not executed; `REPRODUCED_THEN_FIXED`; reporter can't approve (403); stale hash (409); reviewer correction re-runs the fix and validation; approval → PUBLISHED; `git apply --check` passes; no token, injection text, password or prompt fence in logs; metrics exposed. |
+| `SlowReadPathIncidentTest` | Second fixture, no exception anywhere: one route's p95 anomaly with a flat sibling route; the cache metric recorded as "no sustained anomaly (since recovered)" and explicitly ruled out with a citation; slow spans carry `db.rows_returned` and `cache.product_hit=true`; suspect verified at `ProductDetailService.java:24`; rollback recommended, not executed; the diff switches to the aggregate/top-N queries and adds no cache; the rows-read reproduction test fails before and passes after. |
+| `FeatureRolloutIncidentTest` | Third fixture, nothing deployed: errors for region CH only with one version everywhere; the flag's code refs match the failing frame; the deploy, the express-pay flag and the payment-latency warnings are ruled out with citations; mitigation is `DISABLE_FEATURE_FLAG` with `executed=false`, and the MCP catalog has no write tool; the fallback fix is `REPRODUCED_THEN_FIXED` (the repro test *errors* before the fix); approval publishes a PR bundle that lists the flag step as not executed. |
 | `CompromisedModelTest` | **Negative:** a model obeying the injection asks for `github_merge_pull_request`, a path-traversal read and an out-of-scope tool, then proposes editing `.github/workflows/ci.yml`. Everything is denied and audited, the run stops at `NEEDS_HUMAN`, and nothing is validated or published. |
 | `KafkaPipelineTest` | Same pipeline over embedded KRaft Kafka. **Negative:** every command is redelivered (no state change, ledger unchanged) and two poison messages go to the DLT without failing the run or blocking the partition. |
 | `McpToolBoundaryTest` | Real MCP client discovers exactly 7 read-only tools; `/mcp` returns 401/403 to non-TOOLS callers; gateway denies unknown, out-of-stage, out-of-scope, schema-invalid and cross-service calls and audits all six; server-side limits hold without the gateway. |
-| `ValidationRunnerTest` | Runs real Maven: a correct fix is `REPRODUCED_THEN_FIXED`; a non-compiling patch is `TESTS_FAILED`; a "reproduction" test that passes on buggy code is `NOT_REPRODUCED`. |
+| `ValidationRunnerTest` | Runs real Maven: a correct fix is `REPRODUCED_THEN_FIXED`; a non-compiling patch is `TESTS_FAILED`; a "reproduction" test that passes on buggy code is `NOT_REPRODUCED`; child output in the Windows console code page (Surefire's `»` as byte `0xBB`) is read instead of being misreported as "Maven not on PATH". |
 | `BoundedFailureModesTest` | A permanently overloaded model is tried 3 times, then the run is `FAILED`; a model that never finishes is stopped by its 2-turn budget. |
 | `GitHubDraftPublisherTest` | Draft PR created with no merge call; a lost create response is reconciled (still one PR); redelivery reuses the PR; remote drift is a conflict; the client has no merge/delete/approve method. |
 | `AnthropicModelClientTest` | SDK request shape (model, max_tokens, effort, system, replayed turns, fallback header and body); 429/529 → transient; 400 and refusal → stop. |
-| `PatchPolicyTest`, `EvidenceSafetyTest`, `SeededIncidentConsistencyTest` | Allowlist and size limits, redaction, injection detection, pruning (27k lines → ≤10 signatures), telemetry ↔ code consistency. |
+| `PatchPolicyTest`, `EvidenceSafetyTest`, `SeededIncidentConsistencyTest` | Per-service allowlists (an orders path is a SECURITY violation in a catalog run) and size limits; redaction; injection detection; pruning (27k lines → ≤10 signatures); telemetry ↔ code consistency for all three fixtures. |
 
-CI (`.github/workflows/ci.yml`) runs the sample repository's tests and then `mvn verify` on Java 21.
+CI (`.github/workflows/ci.yml`) runs every sample repository's own tests and then `mvn verify` on Java 21.
 
 ## Layout
 
@@ -217,26 +259,29 @@ src/main/java/dev/incidentforge/
   pipeline/      command model, idempotent processor, stages/ (collect … publish)
   mcp/           MCP server (official SDK) + read-only tool handlers
   tools/         tool catalog, JSON-Schema validator, MCP client, ToolGateway + ToolPolicy
-  llm/           ModelClient, Claude adapter, offline scripted model, bounded agent loop, prompts, skills
+  llm/           ModelClient, Claude adapter, offline model (generic rules + per-fixture OfflineScenarios),
+                 bounded agent loop, prompts, skills
   evidence/      log pruning, redaction, injection signal
   patch/         patch policy, diff rendering, scratch workspaces
   validation/    reproduce-then-fix Maven runner
   publish/       local bundle publisher, GitHub REST client + idempotent draft publisher
-  telemetry/     seeded synthetic incident world
+  telemetry/     TelemetryWorld + three seeded worlds (orders poison event, catalog latency, checkout rollout)
 src/main/resources/  application*.yml, schema.sql, tools/catalog.json, schemas/, skills/, static/review.html
-sample-repo/orders-consumer/   the only repository IncidentForge may patch (plain Java + JUnit)
-samples/incidents/             the sparse report used by the demo and tests
-docs/ARCHITECTURE.md, docs/TRUST-BOUNDARIES.md
+sample-repo/{orders-consumer,catalog-api,checkout-api}/   one patchable repository per service (plain Java + JUnit)
+samples/incidents/             the three sparse reports used by the demo and tests
+src/main/resources/skills/     per-domain guidance: kafka-consumer, http-read-path, feature-rollout
+docs/ARCHITECTURE.md, docs/TRUST-BOUNDARIES.md, docs/interview-stories.md
 ```
 
 ## Limitations
 
-* **Offline model is scripted.** `OfflineModelClient` is a deterministic heuristic written for this
-  seeded incident. It exercises the real loop, MCP tools, schemas, budgets and policies, but says
-  nothing about model reasoning quality. With `provider=anthropic`, results will vary, and the
+* **Offline model is scripted.** `OfflineModelClient` is a deterministic heuristic. Classification,
+  timeline and change correlation are generic rules over the evidence. Locating the suspect line and
+  choosing the edit are per-fixture scripts (`OfflineScenarios`). It exercises the real loop, MCP
+  tools, schemas, budgets and policies, but says nothing about model reasoning quality. With `provider=anthropic`, results will vary, and the
   prompts have not been evaluated against the real API.
-* **One synthetic service and one incident.** The telemetry tools serve a generated world, not a real
-  log, metrics or tracing backend. Adding a real backend means implementing the same MCP tool
+* **Three synthetic services, one incident each.** The telemetry tools serve generated worlds, not a
+  real log, metrics or tracing backend. Adding a real backend means implementing the same MCP tool
   contracts.
 * **The validator is not a sandbox.** Maven runs as a host child process with a timeout and scrubbed
   env. Production use needs an ephemeral, network-less container.

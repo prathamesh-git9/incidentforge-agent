@@ -1,0 +1,11 @@
+{
+  "service": "checkout-api",
+  "summary": "some customers cannot get a checkout quote, error page since about 14:00",
+  "reportedBy": "synthetic-alert-bot",
+  "environment": "prod-sim",
+  "metadata": {
+    "version": "3.2.1",
+    "route": "/checkout/quote",
+    "detectedAt": "2026-10-13T14:35:00Z"
+  }
+}

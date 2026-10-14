@@ -86,6 +86,9 @@ class OfflineEndToEndTest {
         assertThat(run.at("/mitigation/action").asText()).isEqualTo("ROLLBACK_DEPLOY");
         assertThat(run.at("/mitigation/target").asText()).isEqualTo("1.8.3");
         assertThat(run.at("/mitigation/executed").asBoolean()).isFalse();
+        // The skip-offset alternative must name the poison record, not a healthy partition from an INFO line.
+        assertThat(run.at("/mitigation/alternatives").toString())
+                .contains("SKIP_POISON_OFFSET: advance the consumer group past partition 3 offset 918274");
 
         assertThat(run.at("/validation/verdict").asText()).isEqualTo("REPRODUCED_THEN_FIXED");
         assertThat(run.at("/validation/beforeFix/exitCode").asInt()).isNotZero();

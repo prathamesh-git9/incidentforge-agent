@@ -26,7 +26,7 @@ import org.springframework.stereotype.Component;
  * <p>Nothing here is real production data; every value is generated from a fixed seed.
  */
 @Component
-public class SyntheticTelemetry {
+public class SyntheticTelemetry implements TelemetryWorld {
 
     public static final String SERVICE = "orders-consumer";
     public static final long SEED = 20261012L;
@@ -64,25 +64,6 @@ public class SyntheticTelemetry {
             \tat com.example.orders.OrderEventParser.parseAmount(OrderEventParser.java:36)
             \t... 3 more""";
 
-    public record LogEntry(Instant timestamp, String level, String logger, String message, String stack) {
-    }
-
-    public record MetricPoint(Instant timestamp, double value) {
-    }
-
-    public record Series(Map<String, String> labels, List<MetricPoint> points) {
-    }
-
-    public record Span(String traceId, String name, Instant start, long durationMs, String status,
-                       Map<String, String> attributes) {
-    }
-
-    public record Deploy(String version, Instant at, String commit, String summary, List<String> changedFiles) {
-    }
-
-    public record Flag(String key, boolean enabled, int rolloutPercent, Instant changedAt, String description) {
-    }
-
     private final List<LogEntry> logs;
     private final Map<String, List<Series>> metrics;
     private final List<Span> spans;
@@ -104,27 +85,38 @@ public class SyntheticTelemetry {
                                 "src/main/java/com/example/orders/OrderEventProcessor.java")));
         this.flags = List.of(
                 new Flag("orders.async-ledger-writes", true, 100, FLAG_RAMP,
-                        "Batch ledger writes asynchronously (ramped 25% -> 100%)"),
+                        "Batch ledger writes asynchronously (ramped 25% -> 100%)",
+                        List.of("src/main/java/com/example/orders/OrderLedger.java")),
                 new Flag("orders.audit-sampling", false, 0, Instant.parse("2026-10-01T08:00:00Z"),
-                        "Sample order payloads into the audit log"));
+                        "Sample order payloads into the audit log", List.of()));
     }
 
+    @Override
+    public String service() {
+        return SERVICE;
+    }
+
+    @Override
     public List<LogEntry> logs() {
         return logs;
     }
 
+    @Override
     public List<Series> metric(String name) {
         return metrics.getOrDefault(name, List.of());
     }
 
+    @Override
     public List<Span> spans() {
         return spans;
     }
 
+    @Override
     public List<Deploy> deploys() {
         return deploys;
     }
 
+    @Override
     public List<Flag> flags() {
         return flags;
     }
@@ -234,7 +226,7 @@ public class SyntheticTelemetry {
         List<Span> out = new ArrayList<>();
         int attempt = 0;
         for (Instant t = LOG_START; t.isBefore(DETECTED); t = t.plusSeconds(10)) {
-            out.add(new Span(traceId(random), "orders.v1 process", t.plusMillis(random.nextInt(500)),
+            out.add(new Span(TelemetryWorld.traceId(random), "orders.v1 process", t.plusMillis(random.nextInt(500)),
                     2 + random.nextInt(6), "OK", Map.of("messaging.system", "kafka",
                     "messaging.destination", "orders.v1",
                     "messaging.kafka.partition", String.valueOf(random.nextInt(PARTITIONS)))));
@@ -248,14 +240,11 @@ public class SyntheticTelemetry {
                 attributes.put("exception.type", "com.example.orders.MalformedEventException");
                 attributes.put("exception.message", "invalid amount '12,50'");
                 attributes.put("retry.attempt", String.valueOf(attempt));
-                out.add(new Span(traceId(random), "orders.v1 process", t.plusMillis(random.nextInt(500)), 1,
+                out.add(new Span(TelemetryWorld.traceId(random), "orders.v1 process", t.plusMillis(random.nextInt(500)), 1,
                         "ERROR", Collections.unmodifiableMap(attributes)));
             }
         }
         return out;
     }
 
-    private static String traceId(Random random) {
-        return String.format("%016x%016x", random.nextLong(), random.nextLong());
-    }
 }
