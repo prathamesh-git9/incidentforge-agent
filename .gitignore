@@ -1,0 +1,14 @@
+target/
+data/
+*.log
+.idea/
+*.iml
+.vscode/
+.DS_Store
+.env
+*.env
+# never commit source media or transcripts used as inspiration
+*.webm
+*.mp4
+*.mp3
+*transcript*.txt

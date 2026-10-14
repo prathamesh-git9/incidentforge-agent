@@ -1,0 +1,7 @@
+target/
+data/
+**/target/
+.git/
+.github/
+.idea/
+*.log

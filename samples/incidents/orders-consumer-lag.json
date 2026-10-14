@@ -1,0 +1,12 @@
+{
+  "service": "orders-consumer",
+  "summary": "orders backlog keeps growing and one consumer pod is pinned at high CPU",
+  "reportedBy": "synthetic-alert-bot",
+  "environment": "prod-sim",
+  "metadata": {
+    "version": "1.8.3",
+    "topic": "orders.v1",
+    "consumerGroup": "orders-ledger",
+    "detectedAt": "2026-10-12T11:05:00Z"
+  }
+}

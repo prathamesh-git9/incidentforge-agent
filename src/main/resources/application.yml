@@ -1,0 +1,158 @@
+spring:
+  application:
+    name: incidentforge-agent
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: jdbc:h2:file:./data/incidentforge;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        # must satisfy delivery.timeout.ms >= linger.ms + request.timeout.ms
+        request.timeout.ms: 10000
+        delivery.timeout.ms: 15000
+    consumer:
+      group-id: incidentforge-pipeline
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: record
+      observation-enabled: true
+    template:
+      observation-enabled: true
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  tracing:
+    sampling:
+      probability: 1.0
+  observations:
+    key-values:
+      application: incidentforge-agent
+
+logging:
+  pattern:
+    # run/incident/stage come from MDC; trace/span ids from Micrometer Tracing.
+    level: "%5p [trace=%X{traceId:-} span=%X{spanId:-} run=%X{runId:-} stage=%X{stage:-}]"
+  level:
+    org.apache.kafka: WARN
+    io.modelcontextprotocol: WARN
+
+incidentforge:
+  # in-memory | kafka. Both use the same transactional outbox and the same idempotent command processor.
+  bus: kafka
+  work-dir: ./target/incidentforge-work
+  services:
+    orders-consumer:
+      domain: kafka-consumer
+      repository: ./sample-repo/orders-consumer
+      repository-id: orders-consumer
+      owner: team-orders (synthetic)
+  llm:
+    # offline | anthropic
+    provider: offline
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
+      timeout: 120s
+      max-retries: 2
+      refusal-fallback: true
+  budgets:
+    classify:
+      model: claude-sonnet-5-5
+      effort: low
+      max-turns: 2
+      max-output-tokens: 2000
+      max-input-chars: 24000
+      timeout: 60s
+    investigate:
+      model: claude-sonnet-5-5
+      effort: medium
+      max-turns: 4
+      max-output-tokens: 3000
+      max-input-chars: 40000
+      timeout: 120s
+    fix:
+      model: claude-opus-5-5
+      effort: high
+      max-turns: 6
+      max-output-tokens: 8000
+      max-input-chars: 60000
+      timeout: 300s
+  context:
+    log-lookback: 40m
+    metric-lookback: 65m
+    page-size: 2000
+    max-log-lines: 40000
+    max-signatures: 10
+    max-evidence-chars: 9000
+    max-tool-result-chars: 6000
+  patch:
+    editable-prefixes:
+      - src/main/java/com/example/orders/
+    new-file-prefixes:
+      - src/test/java/com/example/orders/
+    max-files: 3
+    max-changed-lines: 80
+    forbidden-patterns:
+      - "Runtime.getRuntime"
+      - "ProcessBuilder"
+      - "System.exit"
+      - "java.net."
+      - "java.nio.file.Files.delete"
+      - "@Disabled"
+      - "Class.forName"
+  validation:
+    maven-executable: auto
+    timeout: 240s
+    offline: false
+    max-output-chars: 4000
+  github:
+    # local: write a reviewable PR bundle to local-outbox. github: open a DRAFT PR on the allowlisted repository.
+    mode: local
+    api-url: https://api.github.com
+    repository: ${INCIDENTFORGE_GITHUB_REPOSITORY:}
+    base-branch: main
+    token: ${INCIDENTFORGE_GITHUB_TOKEN:}
+    path-prefix: ""
+    timeout: 20s
+    local-outbox: ./target/pr-drafts
+    reconcile-attempts: 3
+  mcp:
+    endpoint: /mcp
+    client-username: mcp-agent
+    client-password: ${INCIDENTFORGE_MCP_PASSWORD}
+    request-timeout: 20s
+  pipeline:
+    max-fix-attempts: 2
+    max-correction-rounds: 2
+    max-tool-calls-per-turn: 3
+    investigator-timeout: 180s
+    transient-retries: 2
+    transient-backoff: 500ms
+  security:
+    users:
+      reporter:
+        password: ${INCIDENTFORGE_REPORTER_PASSWORD}
+        roles: [REPORTER]
+      reviewer:
+        password: ${INCIDENTFORGE_REVIEWER_PASSWORD}
+        roles: [REVIEWER]
+      mcp-agent:
+        password: ${INCIDENTFORGE_MCP_PASSWORD}
+        roles: [TOOLS]

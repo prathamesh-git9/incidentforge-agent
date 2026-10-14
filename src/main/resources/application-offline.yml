@@ -1,0 +1,25 @@
+# Credential-free demo profile: deterministic offline model, in-memory command bus, local PR bundle.
+# The passwords below are DEMO-ONLY. StartupGuard refuses to start with them when a real model
+# provider or real GitHub publishing is configured.
+spring:
+  datasource:
+    url: jdbc:h2:mem:incidentforge;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
+incidentforge:
+  bus: in-memory
+  llm:
+    provider: offline
+  github:
+    mode: local
+  mcp:
+    client-password: demo-mcp-only
+  security:
+    users:
+      reporter:
+        password: demo-reporter-only
+      reviewer:
+        password: demo-reviewer-only
+      mcp-agent:
+        password: demo-mcp-only

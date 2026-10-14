@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>IncidentForge review</title>
+  <style>
+    body { font: 14px/1.45 system-ui, sans-serif; margin: 2rem auto; max-width: 1100px; color: #1d1d1f; }
+    h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 1.6rem; border-bottom: 1px solid #ddd; }
+    table { border-collapse: collapse; width: 100%; } td, th { border: 1px solid #ddd; padding: 4px 6px; vertical-align: top; }
+    pre { background: #f6f8fa; padding: .8rem; overflow-x: auto; white-space: pre-wrap; }
+    .flag { color: #b42318; font-weight: 600; } .muted { color: #6b7280; }
+    button { margin-right: .5rem; } textarea { width: 100%; height: 4rem; }
+  </style>
+</head>
+<body>
+<h1>IncidentForge &mdash; run review</h1>
+<p class="muted">Evidence text below is untrusted data copied from logs and tools. Approving publishes a
+  <strong>draft</strong> PR for exactly the patch hash shown; IncidentForge cannot merge.</p>
+<label>Run id <input id="run" size="24"></label> <button onclick="load()">Load</button>
+<div id="out"></div>
+<script>
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const params = new URLSearchParams(location.search);
+  if (params.get('run')) { document.getElementById('run').value = params.get('run'); load(); }
+  let current;
+  async function load() {
+    const id = document.getElementById('run').value.trim();
+    const res = await fetch('/api/runs/' + encodeURIComponent(id));
+    if (!res.ok) { document.getElementById('out').textContent = 'HTTP ' + res.status; return; }
+    current = await res.json();
+    render(current);
+  }
+  function render(r) {
+    const ev = r.evidence.map(e => `<tr><td>${esc(e.evidenceId)}</td><td>${esc(e.kind)}</td><td>${esc(e.sourceTool)}</td>
+      <td>${esc(e.observedAt)}</td><td><pre>${esc(e.summary)}</pre>${e.flags.length ? `<span class="flag">${esc(e.flags.join(', '))}</span>` : ''}</td></tr>`).join('');
+    const tl = r.timeline.map(t => `<tr><td>${esc(t.at)}</td><td>${esc(t.stage)}</td><td>${esc(t.kind)}</td><td>${esc(t.message)}</td></tr>`).join('');
+    const denied = r.toolCalls.filter(c => c.decision !== 'ALLOWED');
+    document.getElementById('out').innerHTML = `
+      <h2>Status: ${esc(r.status)} ${r.stage ? '(' + esc(r.stage) + ')' : ''}</h2><p>${esc(r.statusReason)}</p>
+      <h2>Root cause</h2><pre>${esc(JSON.stringify(r.rootCause, null, 2))}</pre>
+      <h2>Mitigation (recommendation only)</h2><pre>${esc(JSON.stringify(r.mitigation, null, 2))}</pre>
+      <h2>Evidence timeline</h2><table><tr><th>id</th><th>kind</th><th>source</th><th>observed</th><th>summary</th></tr>${ev}</table>
+      <h2>Patch ${esc(r.patchSha256)}</h2><pre>${esc(r.patch ? r.patch.unifiedDiff : 'none')}</pre>
+      <h2>Validation</h2><pre>${esc(JSON.stringify(r.validation, null, 2))}</pre>
+      <h2>Tool calls</h2><p>${r.toolCalls.length} calls, ${denied.length} not allowed</p>
+      <h2>Pipeline timeline</h2><table>${tl}</table>
+      <h2>Decision</h2>
+      <textarea id="comment" placeholder="comment or correction for the fixer"></textarea><br>
+      <button onclick="decide('APPROVE')">Approve this patch hash</button>
+      <button onclick="decide('REJECT')">Reject</button>
+      <button onclick="correct()">Send correction</button>`;
+  }
+  async function decide(decision) {
+    await post('/decision', {decision, patchSha256: current.patchSha256, comment: document.getElementById('comment').value});
+  }
+  async function correct() { await post('/corrections', {comment: document.getElementById('comment').value}); }
+  async function post(path, body) {
+    const res = await fetch('/api/runs/' + encodeURIComponent(current.runId) + path,
+      {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    if (!res.ok) { alert('HTTP ' + res.status + ': ' + await res.text()); return; }
+    render(current = await res.json());
+  }
+</script>
+</body>
+</html>
