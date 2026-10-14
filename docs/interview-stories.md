@@ -33,3 +33,17 @@ The end-to-end test submits the same incident twice with one idempotency key and
 The scripted correction is a test input, not a teammate conversation. The test validates a specific approval boundary; the hosted GitHub publisher is tested against a local fake API, not github.com.
 
 Useful follow-ups: what to do after an uncertain GitHub response; why approval binds to a hash rather than a run ID alone; why a passing test still needs human review.
+
+## GitHub created the PR, but the response was lost
+
+`GitHubDraftPublisherTest` runs the publisher against an in-process fake GitHub API. One variant accepts a draft PR request and creates the PR, but holds the response long enough for the client to time out. A blind retry could open a second PR. The publisher queries for its stable run branch, finds the existing draft and records the result. Repeating the publish call leaves exactly one PR; the test also checks that the file writes were not repeated. Another variant changes the target file on the remote default branch after local validation and confirms the publisher refuses to publish over that drift.
+
+This is a local protocol failure test, not a claim that github.com timed out in production. It gives a concrete answer to “what do you do after an uncertain external write?” without pretending Kafka transactions cover GitHub.
+
+Useful follow-ups: stable branch/PR identifiers; distinguishing a lost response from a rejected write; when to stop and require a person because reconciliation is inconclusive.
+
+## The model never finishes its turn
+
+`BoundedFailureModesTest` substitutes a classifier that repeatedly asks to call `logs_search`, which that stage is not allowed to use. The gateway denies the call, and the classifier keeps asking. The run stops at `NEEDS_HUMAN` after its two-turn budget rather than consuming unbounded time and tokens. A separate variant makes the provider throw a simulated `529 overloaded` on every attempt; the run records `FAILED` after three total attempts.
+
+The point is the separation between a transient provider error, which gets a small bounded retry, and a model loop that violates the stage contract, which stops for a person. Both cases are deterministic local tests. The budget itself is not a performance or production-reliability claim.
